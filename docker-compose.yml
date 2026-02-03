@@ -1,0 +1,155 @@
+version: "3.7"
+x-mongo-variables: &mongo-variables
+  MONGODB_HOSTNAME: mongodb
+  MONGODB_PORT: 27017
+  MONGODB_DATABASE: crawlerx_db
+x-elasticsearch-variables: &elasticsearch-variables
+  ELASTIC_SEARCH_USERNAME: admin
+  ELASTIC_SEARCH_PASSWORD: admin
+  ELASTIC_SEARCH_HOSTNAME: elasticsearch
+  ELASTIC_SEARCH_PORT: 9200
+x-rabbitmq-variables: &rabbitmq-variables
+  CELERY_BROKER_USERNAME: guest
+  CELERY_BROKER_PASSWORD: guest
+  CELERY_BROKER_HOSTNAME: rabbitmq
+  CELERY_BROKER_PORT: 5672
+x-scrapy-variables: &scrapy-variables
+  SCRAPY_API_HOSTNAME: scrapy
+  SCRAPY_API_PORT: 6800
+x-django-user-variables: &django-user-variables
+  DJANGO_ADMIN_USERNAME: admin
+  DJANGO_ADMIN_PASSWORD: admin
+  DJANGO_ADMIN_EMAIL: admin@scorelab.org
+
+services:
+  django:
+    build:
+        context: ./crawlerx_server
+        dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    command: ["python3", "manage.py", "runserver", "0.0.0.0:8000"]
+    environment:
+      FIREBASE_APP_KEY: AIzaSyD88ucXoxhnfm3iNUA-FJ-zg-0GrJKT-Zo
+      <<: *mongo-variables
+      <<: *elasticsearch-variables
+      <<: *rabbitmq-variables
+      <<: *scrapy-variables
+      <<: *django-user-variables
+    depends_on:
+      - mongodb
+      - elasticsearch
+      - rabbitmq
+
+  celery-beat:
+    build:
+      context: ./crawlerx_server
+      dockerfile: Dockerfile
+    command: ["python3", '-m', "celery", "-A", "crawlerx_server", "beat", "-l", "info"]
+    environment:
+      <<: *rabbitmq-variables
+    depends_on:
+      - rabbitmq
+
+  celery-worker:
+    build:
+      context: ./crawlerx_server
+      dockerfile: Dockerfile
+    command: ["python3", '-m', "celery", "-A", "crawlerx_server", "worker", "-l", "info"]
+    environment:
+      <<: *mongo-variables
+      <<: *elasticsearch-variables
+      <<: *rabbitmq-variables
+      <<: *scrapy-variables
+    depends_on:
+      - rabbitmq
+
+  scrapy:
+    build:
+        context: ./scrapy_app
+        dockerfile: Dockerfile
+    ports:
+      - 6800:6800    
+    environment:
+      <<: *mongo-variables
+      <<: *elasticsearch-variables
+      TOR_PROXY_SERVICE_HOST: tor-proxy
+      TOR_PROXY_SERVICE_PORT: 8118
+    depends_on:
+      - mongodb
+      - elasticsearch
+      - rabbitmq
+
+  tor-proxy:
+    image: "dperson/torproxy:latest"
+    hostname: "tor-proxy"
+    restart: on-failure 
+    ports:
+      - "9050:9050"
+      - "8118:8118"
+    environment:
+      TOR_NewCircuitPeriod: 6000
+      BW: 1000
+      PASSWORD: 'admin'
+    depends_on:
+      - scrapy
+
+  rabbitmq:
+    image: "rabbitmq:3-management"
+    hostname: "rabbit"
+    restart: on-failure    
+    ports:
+      - "15672:15672"
+    expose:
+      - 5672
+    labels:
+      NAME: "rabbitmq"
+    volumes:
+      - ./rabbitmq-isolated.conf:/etc/rabbitmq/rabbitmq.config
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:15672"]
+        interval: 30s
+        timeout: 10s
+        retries: 5
+
+  mongodb:
+    image: mongo
+    restart: on-failure
+    ports:
+      - 27017:27017  
+
+  elasticsearch:
+    image: elasticsearch:7.8.1
+    environment:
+      discovery.type: single-node
+      ELASTIC_USERNAME: admin
+      ELASTIC_PASSWORD: admin
+    ports:
+      - 9200:9200
+
+  vue:
+    build:
+      context: ./crawlerx_app
+      dockerfile: Dockerfile
+    command: [ "npm", "run", "serve" ]
+    ports:
+      - "8080:8080"
+    environment: 
+      VUE_APP_FIREBASE_API_KEY: "AIzaSyD88ucXoxhnfm3iNUA-FJ-zg-0GrJKT-Zo"
+      VUE_APP_FIREBASE_AUTH_DOMAIN: "crawlerx-b2ad1.firebaseapp.com"
+      VUE_APP_FIREBASE_DB_DOMAIN: "https://crawlerx-b2ad1.firebaseio.com"
+      VUE_APP_FIREBASE_PROJECT_ID: "crawlerx-b2ad1"
+      VUE_APP_FIREBASE_STORAGE_BUCKET: "crawlerx-b2ad1.appspot.com"
+      VUE_APP_FIREBASE_MESSAGING_SENDER_ID: "811171439353"
+      VUE_APP_FIREBASE_APP_ID: "1:811171439353:web:64e84b4fc347a5c37eb828"
+      VUE_APP_FIREBASE_MEASURMENT_ID: "G-CM2MX0CRRC"
+      VUE_APP_DJANGO_PROTOCOL: "http"
+      VUE_APP_DJANGO_HOSTNAME: "localhost"
+      VUE_APP_DJANGO_PORT: "8000"  
+    depends_on:
+      - django
+    volumes:
+      - ./crawlerx_app:/app
